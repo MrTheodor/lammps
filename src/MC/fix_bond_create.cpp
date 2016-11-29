@@ -11,6 +11,21 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
+/* ----------------------------------------------------------------------
+   Contributing author: Pierre de Buyl (KU Leuven) http://pdebuyl.be/
+
+   The main contribution is the addition of an alternative selection
+   algorithm for partners in a bond/create reaction, via a
+   modification of 'post_integrate' and additional communication
+   choices.
+
+   The selection method 'random' is presented in de Buyl and Nies,
+   J. Chem. Phys. 142, 134102 (2015). Instead of choosing
+   the closest partners, partners are chosen randomly (and with equal
+   probability) among all partners in the given cutoff.
+
+------------------------------------------------------------------------- */
+
 #include <math.h>
 #include <mpi.h>
 #include <string.h>
@@ -27,21 +42,37 @@
 #include "neigh_list.h"
 #include "neigh_request.h"
 #include "random_mars.h"
+#include "citeme.h"
 #include "memory.h"
 #include "error.h"
 
 using namespace LAMMPS_NS;
 using namespace FixConst;
 
+static const char cite_fix_bond_create_random[] =
+  "fix bond/create with random selection:\n\n"
+  "@Article{debuyl2015,\n"
+  " author = {P. de Buyl and E. Nies},\n"
+  " title = {A parallel algorithm for step- and chain-growth polymerization in Molecular Dynamics},\n"
+  " journal = {J.~Chem.~Phys.},\n"
+  " year =    2015,\n"
+  " volume =  142,\n"
+  " pages =   {134102},\n"
+  " doi =   {10.1063/1.4916313}\n"
+  "}\n\n";
+
 #define BIG 1.0e20
 #define DELTA 16
+#define CMAX 12
+
+enum {comm_bondcount, comm_partner, comm_finalpartner, comm_candidate_list,
+      comm_partner_random};
+enum {method_nearest, method_random};
 
 /* ---------------------------------------------------------------------- */
 
 FixBondCreate::FixBondCreate(LAMMPS *lmp, int narg, char **arg) :
-  Fix(lmp, narg, arg),
-  bondcount(NULL), partner(NULL), finalpartner(NULL), distsq(NULL),
-  probability(NULL), created(NULL), copy(NULL), random(NULL), list(NULL)
+  Fix(lmp, narg, arg)
 {
   if (narg < 8) error->all(FLERR,"Illegal fix bond/create command");
 
@@ -70,6 +101,9 @@ FixBondCreate::FixBondCreate(LAMMPS *lmp, int narg, char **arg) :
     error->all(FLERR,"Invalid bond type in fix bond/create command");
 
   cutsq = cutoff*cutoff;
+
+  keep_bondcount = true;
+  method = method_nearest;
 
   // optional keywords
 
@@ -122,8 +156,31 @@ FixBondCreate::FixBondCreate(LAMMPS *lmp, int narg, char **arg) :
       itype = force->inumeric(FLERR,arg[iarg+1]);
       if (itype < 0) error->all(FLERR,"Illegal fix bond/create command");
       iarg += 2;
+    } else if (strcmp(arg[iarg],"select") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/create command");
+      if (strcmp(arg[iarg+1],"nearest") == 0) {
+	method = method_nearest;
+      }
+      else if (strcmp(arg[iarg+1],"random") == 0) {
+	method = method_random;
+      }
+      else error->all(FLERR,"Illegal fix bond/create command");
+      iarg += 2;
+    } else if (strcmp(arg[iarg],"keep_bondcount") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix bond/create command");
+      if (strcmp(arg[iarg+1],"yes") == 0) {
+	keep_bondcount = true;
+      }
+      else if (strcmp(arg[iarg+1],"no") == 0) {
+	keep_bondcount = false;
+      }
+      else error->all(FLERR,"Illegal fix bond/create command");
+      iarg += 2;
     } else error->all(FLERR,"Illegal fix bond/create command");
   }
+
+  if (method == method_random && lmp->citeme)
+    lmp->citeme->add(cite_fix_bond_create_random);
 
   // error check
 
@@ -133,6 +190,9 @@ FixBondCreate::FixBondCreate(LAMMPS *lmp, int narg, char **arg) :
       ((imaxbond != jmaxbond) || (inewtype != jnewtype)))
     error->all(FLERR,
                "Inconsistent iparam/jparam values in fix bond/create command");
+
+  if (method == method_random && !force->newton_bond)
+    error->all(FLERR,"Cannot use fix bond/create with newton_bond off");
 
   // initialize Marsaglia RNG with processor-unique seed
 
@@ -150,14 +210,17 @@ FixBondCreate::FixBondCreate(LAMMPS *lmp, int narg, char **arg) :
   // set comm sizes needed by this fix
   // forward is big due to comm of broken bonds and 1-2 neighbors
 
-  comm_forward = MAX(2,2+atom->maxspecial);
-  comm_reverse = 2;
+  comm_forward = MAX(MAX(2,2+atom->maxspecial), 1+CMAX);
+  comm_reverse = MAX(2, 1+CMAX);
 
   // allocate arrays local to this fix
 
   nmax = 0;
   partner = finalpartner = NULL;
   distsq = NULL;
+
+  candidate_n = NULL;
+  candidate_list = NULL;
 
   maxcreate = 0;
   created = NULL;
@@ -194,6 +257,8 @@ FixBondCreate::~FixBondCreate()
   memory->destroy(finalpartner);
   memory->destroy(distsq);
   memory->destroy(created);
+  memory->destroy(candidate_list);
+  memory->destroy(candidate_n);
   delete [] copy;
 }
 
@@ -275,6 +340,15 @@ void FixBondCreate::setup(int vflag)
   if (countflag) return;
   countflag = 1;
 
+  if (keep_bondcount) compute_bondcount();
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixBondCreate::compute_bondcount()
+{
+  int i,j,m;
+
   // count bonds stored with each bond I own
   // if newton bond is not set, just increment count on atom I
   // if newton bond is set, also increment count on atom J even if ghost
@@ -306,7 +380,7 @@ void FixBondCreate::setup(int vflag)
 
   // if newton_bond is set, need to sum bondcount
 
-  commflag = 1;
+  commflag = comm_bondcount;
   if (newton_bond) comm->reverse_comm_fix(this,1);
 }
 
@@ -320,6 +394,8 @@ void FixBondCreate::post_integrate()
   tagint *slist;
 
   if (update->ntimestep % nevery) return;
+
+  if (!keep_bondcount) compute_bondcount();
 
   // check that all procs have needed ghost atoms within ghost cutoff
   // only if neighbor list has changed since last check
@@ -337,7 +413,7 @@ void FixBondCreate::post_integrate()
 
   // forward comm of bondcount, so ghosts have it
 
-  commflag = 1;
+  commflag = comm_bondcount;
   comm->forward_comm_fix(this,1);
 
   // resize bond partner list and initialize it
@@ -348,10 +424,14 @@ void FixBondCreate::post_integrate()
     memory->destroy(partner);
     memory->destroy(finalpartner);
     memory->destroy(distsq);
+    memory->destroy(candidate_list);
+    memory->destroy(candidate_n);
     nmax = atom->nmax;
     memory->create(partner,nmax,"bond/create:partner");
     memory->create(finalpartner,nmax,"bond/create:finalpartner");
     memory->create(distsq,nmax,"bond/create:distsq");
+    memory->create(candidate_list,nmax,CMAX,"bond/create:candidate_list");
+    memory->create(candidate_n,nmax,"bond/create:candidate_n");
     probability = distsq;
   }
 
@@ -362,6 +442,10 @@ void FixBondCreate::post_integrate()
     partner[i] = 0;
     finalpartner[i] = 0;
     distsq[i] = BIG;
+    candidate_n[i] = 0;
+    for (j = 0; j < CMAX; j++) {
+      candidate_list[i][j]=0;
+    }
   }
 
   // loop over neighbors of my atoms
@@ -375,6 +459,8 @@ void FixBondCreate::post_integrate()
   tagint **special = atom->special;
   int *mask = atom->mask;
   int *type = atom->type;
+  int **bond_type = atom->bond_type;
+  int newton_bond = force->newton_bond;
 
   neighbor->build_one(list,1);
   inum = list->inum;
@@ -423,52 +509,127 @@ void FixBondCreate::post_integrate()
       rsq = delx*delx + dely*dely + delz*delz;
       if (rsq >= cutsq) continue;
 
-      if (rsq < distsq[i]) {
-        partner[i] = tag[j];
-        distsq[i] = rsq;
-      }
-      if (rsq < distsq[j]) {
-        partner[j] = tag[i];
-        distsq[j] = rsq;
-      }
+      if (method == method_nearest) {
+	if (rsq < distsq[i]) {
+	  partner[i] = tag[j];
+	  distsq[i] = rsq;
+	}
+	if (rsq < distsq[j]) {
+	  partner[j] = tag[i];
+	  distsq[j] = rsq;
+	}
+      } else if (method == method_random) {
+	if (random->uniform() > fraction) continue;
+
+	// add candidates for i and j
+	// only the particle of type itype will collect candidates
+	if (itype == iatomtype && jtype == jatomtype) {
+	  if (candidate_n[i]<CMAX) {
+	    candidate_list[i][candidate_n[i]] = tag[j];
+	    candidate_n[i]++;
+	  } else {
+	    error->one(FLERR, "capacity of candidate_list exceeded");
+	  }
+	} else if (itype == jatomtype && jtype == iatomtype) {
+	  if (candidate_n[j]<CMAX) {
+	    candidate_list[j][candidate_n[j]] = tag[i];
+	    candidate_n[j]++;
+	  } else {
+	    error->one(FLERR, "capacity of candidate_list exceeded");
+	  }
+	}
+      } else
+	error->all(FLERR,"Fix bond/create: unknown method");
     }
   }
 
-  // reverse comm of distsq and partner
-  // not needed if newton_pair off since I,J pair was seen by both procs
+  if (method == method_nearest) {
+    // reverse comm of distsq and partner
+    // not needed if newton_pair off since I,J pair was seen by both procs
 
-  commflag = 2;
-  if (force->newton_pair) comm->reverse_comm_fix(this);
+    commflag = comm_partner;
+    if (force->newton_pair) comm->reverse_comm_fix(this);
 
-  // each atom now knows its winning partner
-  // for prob check, generate random value for each atom with a bond partner
-  // forward comm of partner and random value, so ghosts have it
+    // each atom now knows its winning partner
+    // for prob check, generate random value for each atom with a bond partner
+    // forward comm of partner and random value, so ghosts have it
 
-  if (fraction < 1.0) {
-    for (i = 0; i < nlocal; i++)
-      if (partner[i]) probability[i] = random->uniform();
-  }
+    if (fraction < 1.0) {
+      for (i = 0; i < nlocal; i++)
+	if (partner[i]) probability[i] = random->uniform();
+    }
 
-  commflag = 2;
-  comm->forward_comm_fix(this,2);
+    commflag = comm_partner;
+    comm->forward_comm_fix(this,2);
+  } else if (method == method_random) {
+
+    double candidate_ran;
+
+    // send lists of candidates
+    commflag = comm_candidate_list;
+    if (force->newton_pair) comm->reverse_comm_fix(this);
+
+    // select a unique partner for itype atoms
+    for (i = 0; i < nlocal; i++) {
+      int c_n = candidate_n[i];
+      if (c_n==0) continue;
+      candidate_ran = random->uniform();
+      for (j = 0; j < c_n; j++)
+	if (candidate_ran < ((double) (j+1)) / (double)c_n ) {
+	  k = atom->map(candidate_list[i][j]);
+	  partner[k] = tag[i];
+	  break;
+	}
+    }
+
+    // reset candidate list, fill by jtype atoms and send
+    for (i = 0; i < nall; i++) {
+      candidate_n[i] = 0;
+      for (j = 0; j < CMAX; j++) candidate_list[i][j] = 0;
+    }
+    for (i = 0; i < nall; i++)
+      if (partner[i]) {
+	candidate_list[i][candidate_n[i]++] = partner[i];
+      }
+    commflag = comm_candidate_list;
+    comm->reverse_comm_fix(this);
+
+    // select a unique partner for jtype atoms
+    for (i = 0; i < nall; i++) partner[i] = 0;
+
+    for (i = 0; i < nlocal; i++) {
+      int c_n = candidate_n[i];
+      if (c_n==0) continue;
+      candidate_ran = random->uniform();
+      for (j = 0; j < c_n; j++)
+	if (candidate_ran < ((double) (j+1)) / (double)c_n ) {
+	  partner[i] = candidate_list[i][j];
+	  k = atom->map(candidate_list[i][j]);
+	  partner[k] = tag[i];
+	  break;
+	}
+    }
+
+    commflag = comm_partner_random;
+    comm->forward_comm_fix(this, 1);
+    comm->reverse_comm_fix(this, 1);
+  } else
+    error->all(FLERR,"Fix bond/create: unknown method");
 
   // create bonds for atoms I own
   // only if both atoms list each other as winning bond partner
   //   and probability constraint is satisfied
   // if other atom is owned by another proc, it should do same thing
 
-  int **bond_type = atom->bond_type;
-  int newton_bond = force->newton_bond;
-
   ncreate = 0;
   for (i = 0; i < nlocal; i++) {
     if (partner[i] == 0) continue;
     j = atom->map(partner[i]);
-    if (partner[j] != tag[i]) continue;
+    if (method == method_nearest && partner[j] != tag[i]) continue;
 
     // apply probability constraint using RN for atom with smallest ID
 
-    if (fraction < 1.0) {
+    if (method == method_nearest && fraction < 1.0) {
       if (tag[i] < tag[j]) {
         if (probability[i] >= fraction) continue;
       } else {
@@ -518,9 +679,13 @@ void FixBondCreate::post_integrate()
 
     bondcount[i]++;
     if (type[i] == iatomtype) {
-      if (bondcount[i] == imaxbond) type[i] = inewtype;
+      if (bondcount[i] == imaxbond) {
+	type[i] = inewtype;
+      }
     } else {
-      if (bondcount[i] == jmaxbond) type[i] = jnewtype;
+      if (bondcount[i] == jmaxbond) {
+	type[i] = jnewtype;
+      }
     }
 
     // store final created bond partners and count the created bond once
@@ -546,7 +711,7 @@ void FixBondCreate::post_integrate()
   // communicate final partner and 1-2 special neighbors
   // 1-2 neighs already reflect created bonds
 
-  commflag = 3;
+  commflag = comm_finalpartner;
   comm->forward_comm_fix(this);
 
   // create list of broken bonds that influence my owned atoms
@@ -1220,36 +1385,49 @@ int FixBondCreate::pack_forward_comm(int n, int *list, double *buf,
 
   m = 0;
 
-  if (commflag == 1) {
+  if (commflag == comm_bondcount) {
     for (i = 0; i < n; i++) {
       j = list[i];
       buf[m++] = ubuf(bondcount[j]).d;
     }
-    return m;
-  }
-
-  if (commflag == 2) {
+  } else if (commflag == comm_partner) {
     for (i = 0; i < n; i++) {
       j = list[i];
       buf[m++] = ubuf(partner[j]).d;
       buf[m++] = probability[j];
     }
-    return m;
   }
+  else if (commflag == comm_partner_random) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      buf[m++] = ubuf(partner[j]).d;
+    }
+  } else if (commflag == comm_finalpartner) {
 
-  int **nspecial = atom->nspecial;
-  tagint **special = atom->special;
+    int **nspecial = atom->nspecial;
+    tagint **special = atom->special;
 
-  m = 0;
-  for (i = 0; i < n; i++) {
-    j = list[i];
-    buf[m++] = ubuf(finalpartner[j]).d;
-    ns = nspecial[j][0];
-    buf[m++] = ubuf(ns).d;
-    for (k = 0; k < ns; k++)
-      buf[m++] = ubuf(special[j][k]).d;
-  }
+    m = 0;
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      buf[m++] = ubuf(finalpartner[j]).d;
+      ns = nspecial[j][0];
+      buf[m++] = ubuf(ns).d;
+      for (k = 0; k < ns; k++)
+	buf[m++] = ubuf(special[j][k]).d;
+    }
+  } else if (commflag == comm_candidate_list) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      buf[m++] = ubuf(candidate_n[j]).d;
+      for (k = 0; k < candidate_n[j]; k++)
+	buf[m++] = ubuf(candidate_list[j][k]).d;
+    }
+  } else
+    error->all(FLERR,"Fix bond/create: unknown commflag");
+
   return m;
+
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1257,21 +1435,26 @@ int FixBondCreate::pack_forward_comm(int n, int *list, double *buf,
 void FixBondCreate::unpack_forward_comm(int n, int first, double *buf)
 {
   int i,j,m,ns,last;
+  tagint buf_partner;
 
   m = 0;
   last = first + n;
 
-  if (commflag == 1) {
+  if (commflag == comm_bondcount) {
     for (i = first; i < last; i++)
       bondcount[i] = (int) ubuf(buf[m++]).i;
 
-  } else if (commflag == 2) {
+  } else if (commflag == comm_partner) {
     for (i = first; i < last; i++) {
       partner[i] = (tagint) ubuf(buf[m++]).i;
       probability[i] = buf[m++];
     }
-
-  } else {
+  } else if (commflag == comm_partner_random) {
+    for (i = first; i < last; i++) {
+      buf_partner = (tagint) ubuf(buf[m++]).i;
+      if (buf_partner > 0) partner[i] = buf_partner;
+    }
+  } else if (commflag == comm_finalpartner) {
     int **nspecial = atom->nspecial;
     tagint **special = atom->special;
 
@@ -1284,46 +1467,75 @@ void FixBondCreate::unpack_forward_comm(int n, int first, double *buf)
       for (j = 0; j < ns; j++)
         special[i][j] = (tagint) ubuf(buf[m++]).i;
     }
-  }
+  } else if (commflag == comm_candidate_list) {
+    for (i = first; i < last; i++) {
+      ns = (int) ubuf(buf[m++]).i;
+      for (j = 0; j < ns; j++) {
+	if (candidate_n[i] < CMAX) {
+	  candidate_list[i][candidate_n[i]] = (tagint) ubuf(buf[m++]).i;
+	  candidate_n[i]++;
+	} else {
+	  //error->warning(FLERR,"CMAX passed in unpack_forward_comm");
+	}
+      }
+    }
+  } else
+    error->all(FLERR,"Fix bond/create: unknown commflag");
+
 }
 
 /* ---------------------------------------------------------------------- */
 
 int FixBondCreate::pack_reverse_comm(int n, int first, double *buf)
 {
-  int i,m,last;
+  int i,k,m,last;
 
   m = 0;
   last = first + n;
 
-  if (commflag == 1) {
+  if (commflag == comm_bondcount) {
     for (i = first; i < last; i++)
       buf[m++] = ubuf(bondcount[i]).d;
-    return m;
+  } else if (commflag == comm_partner) {
+    for (i = first; i < last; i++) {
+      buf[m++] = ubuf(partner[i]).d;
+      buf[m++] = distsq[i];
+    }
+  } else if (commflag == comm_partner_random) {
+    for (i = first; i < last; i++)
+      buf[m++] = ubuf(partner[i]).d;
+  } else if (commflag == comm_candidate_list) {
+    for (i = first; i < last; i++) {
+      buf[m++] = ubuf(candidate_n[i]).d;
+      for (k = 0; k<candidate_n[i]; k++) {
+	buf[m++] = ubuf(candidate_list[i][k]).d;
+      }
+    }
   }
+  else
+    error->all(FLERR,"Fix bond/create: unknown commflag");
 
-  for (i = first; i < last; i++) {
-    buf[m++] = ubuf(partner[i]).d;
-    buf[m++] = distsq[i];
-  }
   return m;
+
 }
 
 /* ---------------------------------------------------------------------- */
 
 void FixBondCreate::unpack_reverse_comm(int n, int *list, double *buf)
 {
-  int i,j,m;
+  int i,j,k,m,ns;
+  tagint local_tag;
+  tagint *tag = atom->tag;
+  int nlocal = atom->nlocal;
 
   m = 0;
 
-  if (commflag == 1) {
+  if (commflag == comm_bondcount) {
     for (i = 0; i < n; i++) {
       j = list[i];
       bondcount[j] += (int) ubuf(buf[m++]).i;
     }
-
-  } else {
+  } else if (commflag == comm_partner) {
     for (i = 0; i < n; i++) {
       j = list[i];
       if (buf[m+1] < distsq[j]) {
@@ -1331,7 +1543,26 @@ void FixBondCreate::unpack_reverse_comm(int n, int *list, double *buf)
         distsq[j] = buf[m++];
       } else m += 2;
     }
-  }
+  } else if (commflag == comm_partner_random) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      j &= NEIGHMASK;
+      local_tag = (tagint) ubuf(buf[m++]).i;
+      if (local_tag > 0) partner[j]=local_tag;
+    }
+  } else if (commflag == comm_candidate_list) {
+    for (i = 0; i < n; i++) {
+      j = list[i];
+      ns = (int) ubuf(buf[m++]).i;
+      for (k = 0; k < ns; k++)
+	if (candidate_n[j] < CMAX) {
+	  candidate_list[j][candidate_n[j]++] = (tagint) ubuf(buf[m++]).i;
+	} else {
+	  //error->warning(FLERR,"CMAX passed in unpack");
+	}
+    }
+  } else
+    error->all(FLERR,"Fix bond/create: unknown commflag");
 }
 
 /* ----------------------------------------------------------------------
