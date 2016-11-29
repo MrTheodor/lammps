@@ -35,6 +35,8 @@ class FixBondCreate : public Fix {
   void post_integrate();
   void post_integrate_respa(int, int);
 
+  void compute_bondcount();
+
   int pack_forward_comm(int, int *, double *, int, int *);
   void unpack_forward_comm(int, int, double *);
   int pack_reverse_comm(int, int, double *);
@@ -58,7 +60,9 @@ class FixBondCreate : public Fix {
   int overflow;
   tagint lastcheck;
 
+  int method;
   int *bondcount;
+  bool keep_bondcount;
   int createcount,createcounttotal;
   int nmax;
   tagint *partner,*finalpartner;
@@ -68,6 +72,9 @@ class FixBondCreate : public Fix {
   tagint **created;
 
   tagint *copy;
+
+  int *candidate_n;
+  tagint **candidate_list;
 
   class RanMars *random;
   class NeighList *list;
