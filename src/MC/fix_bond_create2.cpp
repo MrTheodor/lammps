@@ -324,10 +324,15 @@ void FixBondCreate2::post_integrate()
   int natoms = static_cast<int>(atom->natoms);
   int nlocal = atom->nlocal;
 
+  struct data {
+    int pid;
+    double p[3];
+    int state;
+    int mol_id;
+  };
+
   if (me == 0) {
-
-
-
+    
   } else {
   }
 
