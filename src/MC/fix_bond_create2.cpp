@@ -324,20 +324,33 @@ void FixBondCreate2::post_integrate()
   int natoms = static_cast<int>(atom->natoms);
   int nlocal = atom->nlocal;
 
-  struct data {
+  struct AtomData {
     int pid;
     double p[3];
     int state;
     int mol_id;
   };
 
+  AtomData *localData = NULL;
+  memory->create(localData, nlocal, "bond/create:localData");
+
+  double **x = atom->x;
+  int *type = atom->type;
+  int *mask = atom->mask;
+
+  for (int atomIdx = 0; atomIdx < nlocal; atomIdx++) {
+    if (mask[atomIdx] & groupbit) {
+      localData[atomIdx].pid = 
+    }
+
+  // Gather atom properties from neithbour cpus
   if (me == 0) {
-    
   } else {
   }
 
 
   update_topology();
+  memory->destroy(localData);
 }
 
 /* ----------------------------------------------------------------------
