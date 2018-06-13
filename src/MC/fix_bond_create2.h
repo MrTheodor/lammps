@@ -67,6 +67,8 @@ class FixBondCreate2 : public Fix {
   int ncreate,maxcreate;
   tagint **created;
 
+  int stateIdx;
+
   tagint *copy;
 
   class RanMars *random;
