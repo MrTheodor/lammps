@@ -65,6 +65,9 @@ class FixBondCreate2 : public Fix {
   double *distsq,*probability;
 
   int ncreate,maxcreate;
+
+  int state_idx;
+
   tagint **created;
 
   tagint *copy;

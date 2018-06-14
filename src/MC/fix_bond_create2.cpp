@@ -253,6 +253,13 @@ void FixBondCreate2::init()
   neighbor->requests[irequest]->fix = 1;
   neighbor->requests[irequest]->occasional = 1;
 
+  // Add new atom property - state, if not present then create it.
+  int iflag;
+  state_idx = atom->find_custom("state", iflag);
+  if (state_idx == -1) {
+    state_idx = atom->add_custom("state", 0);
+  }
+
   lastcheck = -1;
 }
 
@@ -326,7 +333,7 @@ void FixBondCreate2::post_integrate()
 
   struct AtomData {
     int pid;
-    double p[3];
+    double *p;
     int state;
     int mol_id;
   };
@@ -337,11 +344,16 @@ void FixBondCreate2::post_integrate()
   double **x = atom->x;
   int *type = atom->type;
   int *mask = atom->mask;
+  int *tag = atom->tag;
+  int *state = atom->ivector[state_idx];
 
   for (int atomIdx = 0; atomIdx < nlocal; atomIdx++) {
     if (mask[atomIdx] & groupbit) {
-      localData[atomIdx].pid = 
+      localData[atomIdx].pid = tag[atomIdx];
+      localData[atomIdx].p = x[atomIdx];
+      localData[atomIdx].state = state[atomIdx];
     }
+  }
 
   // Gather atom properties from neithbour cpus
   if (me == 0) {
