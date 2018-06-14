@@ -147,29 +147,7 @@ FixBondCreate2::FixBondCreate2(LAMMPS *lmp, int narg, char **arg) :
   atom->add_callback(0);
   countflag = 0;
 
-  // set comm sizes needed by this fix
-  // forward is big due to comm of broken bonds and 1-2 neighbors
-
-  comm_forward = MAX(2,2+atom->maxspecial);
-  comm_reverse = 2;
-
-  // allocate arrays local to this fix
-
   nmax = 0;
-  partner = finalpartner = NULL;
-  distsq = NULL;
-
-  maxcreate = 0;
-  created = NULL;
-
-  // copy = special list for one atom
-  // size = ms^2 + ms is sufficient
-  // b/c in rebuild_special_one() neighs of all 1-2s are added,
-  //   then a dedup(), then neighs of all 1-3s are added, then final dedup()
-  // this means intermediate size cannot exceed ms^2 + ms
-
-  int maxspecial = atom->maxspecial;
-  copy = new tagint[maxspecial*maxspecial + maxspecial];
 
   // zero out stats
 
@@ -182,19 +160,10 @@ FixBondCreate2::FixBondCreate2(LAMMPS *lmp, int narg, char **arg) :
 FixBondCreate2::~FixBondCreate2()
 {
   // unregister callbacks to this fix from Atom class
-
   atom->delete_callback(id,0);
 
   delete random;
 
-  // delete locally stored arrays
-
-  memory->destroy(bondcount);
-  memory->destroy(partner);
-  memory->destroy(finalpartner);
-  memory->destroy(distsq);
-  memory->destroy(created);
-  delete [] copy;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -253,11 +222,11 @@ void FixBondCreate2::init()
   neighbor->requests[irequest]->fix = 1;
   neighbor->requests[irequest]->occasional = 1;
 
-  // Add new atom property - state, if not present then create it.
-  int iflag;
-  state_idx = atom->find_custom("state", iflag);
-  if (state_idx == -1) {
-    state_idx = atom->add_custom("state", 0);
+  // Custom chem state
+  int flag;
+  stateIdx = atom->find_custom("state", flag);
+  if (stateIdx == -1) {
+      stateIdx = atom->add_custom("state", 0);
   }
 
   lastcheck = -1;
@@ -345,17 +314,19 @@ void FixBondCreate2::post_integrate()
   int *type = atom->type;
   int *mask = atom->mask;
   int *tag = atom->tag;
-  int *state = atom->ivector[state_idx];
+  int *molidx = atom->molindex;
+  int *state = atom->ivector[stateIdx];
 
   for (int atomIdx = 0; atomIdx < nlocal; atomIdx++) {
-    if (mask[atomIdx] & groupbit) {
-      localData[atomIdx].pid = tag[atomIdx];
-      localData[atomIdx].p = x[atomIdx];
-      localData[atomIdx].state = state[atomIdx];
-    }
+      if (mask[atomIdx] & groupbit) {
+          localData[atomIdx].pid = tag[atomIdx];
+          localData[atomIdx].p = x[atomIdx];
+          localData[atomIdx].mol_id = molidx[atomIdx];
+          localData[atomIdx].state = state[atomIdx];
+      }
   }
 
-  // Gather atom properties from neithbour cpus
+  // Gather atom properties from neighbour CPUs
   if (me == 0) {
   } else {
   }
@@ -424,10 +395,6 @@ void FixBondCreate2::update_topology()
   nimpropers = 0;
   overflow = 0;
 
-  //printf("NCREATE %d: ",ncreate);
-  //for (i = 0; i < ncreate; i++)
-  //  printf(" %d %d,",created[i][0],created[i][1]);
-  //printf("\n");
 
   for (i = 0; i < nlocal; i++) {
     influenced = 0;

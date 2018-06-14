@@ -70,6 +70,8 @@ class FixBondCreate2 : public Fix {
 
   tagint **created;
 
+  int stateIdx;
+
   tagint *copy;
 
   class RanMars *random;
