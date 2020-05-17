@@ -1,0 +1,7 @@
+Ths package implements the LJ 12-6-4 potential as a LAMMPS pair style.
+
+=========================================================================
+
+Use "make yes-lj-1264" to enable this package when building LAMMPS.
+
+In your LAMMPS input script you can use this pair by "pair_style lj1264".
