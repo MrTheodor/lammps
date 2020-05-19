@@ -1,0 +1,33 @@
+units lj
+dimension 3
+atom_style full
+
+pair_style lj1264/cut 3.0
+
+timestep 0.01
+
+read_data data.lammps
+run_style verlet
+
+pair_coeff 1 1 1.0 1.0 1.0 3.0
+
+group right id 2
+
+compute 1 all pair/local dist eng force
+
+variable a1 equal x[1]-x[2]
+variable a2 equal y[1]-y[2]
+variable a3 equal z[1]-z[2]
+
+variable dist_sq equal v_a1*v_a1+v_a2*v_a2+v_a3*v_a3
+
+dump 1 all local 1 data_lj1264.dump index c_1[*]
+
+#thermo 1
+#thermo_style  custom time pe etotal v_dist_sq
+
+fix def1 all print 1 "$(step) $(pe) $(v_dist_sq)" file dump_lj1264.txt screen no title "step pe"
+fix m1 right move linear 0.05 NULL NULL
+
+run 5000
+
