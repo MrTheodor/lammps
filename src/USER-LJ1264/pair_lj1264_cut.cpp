@@ -12,7 +12,7 @@
 ------------------------------------------------------------------------- */
 
 /* ----------------------------------------------------------------------
-   Contributing author: Paul Crozier (SNL)
+   Contributing author: Jakub Krajniak
 ------------------------------------------------------------------------- */
 
 #include "pair_lj1264_cut.h"
@@ -31,6 +31,9 @@
 #include "memory.h"
 #include "error.h"
 #include "utils.h"
+
+#include <cstdlib>
+#include <iostream>
 
 using namespace LAMMPS_NS;
 using namespace MathConst;
@@ -115,7 +118,7 @@ void PairLJ1264Cut::compute(int eflag, int vflag)
         r2inv = 1.0/rsq;
         r4inv = r2inv*r2inv;
         r6inv = r2inv*r2inv*r2inv;
-        forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype])  + lj4c4[itype][jtype]*r4inv;
+        forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) + lj4c4[itype][jtype]*r4inv;
         fpair = factor_lj*forcelj*r2inv;
 
         f[i][0] += delx*fpair;
@@ -128,13 +131,12 @@ void PairLJ1264Cut::compute(int eflag, int vflag)
         }
 
         if (eflag) {
-          evdwl = r6inv*(lj3[itype][jtype]*r6inv-lj4[itype][jtype]) - c4[itype][jtype]*r4inv -
-            offset[itype][jtype];
+          evdwl = r6inv*(lj3[itype][jtype]*r6inv-lj4[itype][jtype]) - c4[itype][jtype]*r4inv
+            - offset[itype][jtype];
           evdwl *= factor_lj;
         }
 
-        if (evflag) ev_tally(i,j,nlocal,newton_pair,
-                             evdwl,0.0,fpair,delx,dely,delz);
+        if (evflag) ev_tally(i,j,nlocal,newton_pair,evdwl,0.0,fpair,delx,dely,delz);
       }
     }
   }
@@ -377,8 +379,8 @@ void PairLJ1264Cut::compute_outer(int eflag, int vflag)
         if (eflag) {
           r2inv = 1.0/rsq;
           r6inv = r2inv*r2inv*r2inv;
-          evdwl = r6inv*(lj3[itype][jtype]*r6inv-lj4[itype][jtype]) -
-            offset[itype][jtype];
+          evdwl = r6inv*(lj3[itype][jtype]*r6inv-lj4[itype][jtype]) - c4[itype][jtype]*r4inv
+            - offset[itype][jtype];
           evdwl *= factor_lj;
         }
 
@@ -386,7 +388,7 @@ void PairLJ1264Cut::compute_outer(int eflag, int vflag)
           if (rsq <= cut_in_off_sq) {
             r2inv = 1.0/rsq;
             r6inv = r2inv*r2inv*r2inv;
-            forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]);
+            forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) + lj4c4[itype][jtype]*r4inv;
             fpair = factor_lj*forcelj*r2inv;
           } else if (rsq < cut_in_on_sq)
             fpair = factor_lj*forcelj*r2inv;
@@ -453,8 +455,9 @@ void PairLJ1264Cut::settings(int narg, char **arg)
 
 void PairLJ1264Cut::coeff(int narg, char **arg)
 {
-  if (narg < 5 || narg > 6)
-    error->all(FLERR,"Incorrect args for pair coefficients");
+  if (narg < 6 || narg > 7) {
+      error->all(FLERR, "Incorrect args for pair coefficients");
+  }
   if (!allocated) allocate();
 
   int ilo,ihi,jlo,jhi;
@@ -701,8 +704,8 @@ double PairLJ1264Cut::single(int /*i*/, int /*j*/, int itype, int jtype, double 
   forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) + lj4c4[itype][jtype]*r4inv;
   fforce = factor_lj*forcelj*r2inv;
 
-  philj = r6inv*(lj3[itype][jtype]*r6inv-lj4[itype][jtype]) - c4[itype][jtype]*r4inv -
-    offset[itype][jtype];
+  philj = r6inv*(lj3[itype][jtype]*r6inv-lj4[itype][jtype]) - c4[itype][jtype]*r4inv
+    - offset[itype][jtype];
   return factor_lj*philj;
 }
 
@@ -710,7 +713,7 @@ double PairLJ1264Cut::single(int /*i*/, int /*j*/, int itype, int jtype, double 
 
 void *PairLJ1264Cut::extract(const char *str, int &dim)
 {
-  dim = 2;
+  dim = 3;
   if (strcmp(str,"epsilon") == 0) return (void *) epsilon;
   if (strcmp(str,"sigma") == 0) return (void *) sigma;
   if (strcmp(str, "c4") == 0) return (void *) c4;
