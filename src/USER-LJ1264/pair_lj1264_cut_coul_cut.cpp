@@ -217,7 +217,7 @@ void PairLJ1264CutCoulCut::settings(int narg, char **arg)
 
 void PairLJ1264CutCoulCut::coeff(int narg, char **arg)
 {
-  if (narg < 4 || narg > 6)
+  if (narg < 5 || narg > 7)
     error->all(FLERR,"Incorrect args for pair coefficients");
   if (!allocated) allocate();
 
@@ -227,11 +227,12 @@ void PairLJ1264CutCoulCut::coeff(int narg, char **arg)
 
   double epsilon_one = force->numeric(FLERR,arg[2]);
   double sigma_one = force->numeric(FLERR,arg[3]);
+  double c4_one = force->numeric(FLERR,arg[4]);
 
   double cut_lj_one = cut_lj_global;
   double cut_coul_one = cut_coul_global;
-  if (narg >= 5) cut_coul_one = cut_lj_one = force->numeric(FLERR,arg[4]);
-  if (narg == 6) cut_coul_one = force->numeric(FLERR,arg[5]);
+  if (narg >= 6) cut_coul_one = cut_lj_one = force->numeric(FLERR,arg[5]);
+  if (narg == 7) cut_coul_one = force->numeric(FLERR,arg[6]);
 
   int count = 0;
   for (int i = ilo; i <= ihi; i++) {
@@ -272,6 +273,7 @@ double PairLJ1264CutCoulCut::init_one(int i, int j)
     sigma[i][j] = mix_distance(sigma[i][i],sigma[j][j]);
     cut_lj[i][j] = mix_distance(cut_lj[i][i],cut_lj[j][j]);
     cut_coul[i][j] = mix_distance(cut_coul[i][i],cut_coul[j][j]);
+    c4[i][j] = mix_distance(c4[i][i],c4[j][j]);
   }
 
   double cut = MAX(cut_lj[i][j],cut_coul[i][j]);
@@ -282,6 +284,8 @@ double PairLJ1264CutCoulCut::init_one(int i, int j)
   lj2[i][j] = 24.0 * epsilon[i][j] * pow(sigma[i][j],6.0);
   lj3[i][j] = 4.0 * epsilon[i][j] * pow(sigma[i][j],12.0);
   lj4[i][j] = 4.0 * epsilon[i][j] * pow(sigma[i][j],6.0);
+
+  lj4c4[i][j] = 4.0 * c4[i][j];
 
   if (offset_flag && (cut_lj[i][j] > 0.0)) {
     double ratio = sigma[i][j] / cut_lj[i][j];
@@ -294,6 +298,8 @@ double PairLJ1264CutCoulCut::init_one(int i, int j)
   lj2[j][i] = lj2[i][j];
   lj3[j][i] = lj3[i][j];
   lj4[j][i] = lj4[i][j];
+  lj4c4[j][i] = lj4c4[i][j];
+  c4[j][i] = c4[i][j];
   offset[j][i] = offset[i][j];
 
   // compute I,J contribution to long-range tail correction
@@ -342,6 +348,7 @@ void PairLJ1264CutCoulCut::write_restart(FILE *fp)
         fwrite(&sigma[i][j],sizeof(double),1,fp);
         fwrite(&cut_lj[i][j],sizeof(double),1,fp);
         fwrite(&cut_coul[i][j],sizeof(double),1,fp);
+        fwrite(&c4[i][j],sizeof(double),1,fp);
       }
     }
 }
@@ -367,11 +374,13 @@ void PairLJ1264CutCoulCut::read_restart(FILE *fp)
           utils::sfread(FLERR,&sigma[i][j],sizeof(double),1,fp,NULL,error);
           utils::sfread(FLERR,&cut_lj[i][j],sizeof(double),1,fp,NULL,error);
           utils::sfread(FLERR,&cut_coul[i][j],sizeof(double),1,fp,NULL,error);
+          utils::sfread(FLERR,&c4[i][j],sizeof(double),1,fp,NULL,error);
         }
         MPI_Bcast(&epsilon[i][j],1,MPI_DOUBLE,0,world);
         MPI_Bcast(&sigma[i][j],1,MPI_DOUBLE,0,world);
         MPI_Bcast(&cut_lj[i][j],1,MPI_DOUBLE,0,world);
         MPI_Bcast(&cut_coul[i][j],1,MPI_DOUBLE,0,world);
+        MPI_Bcast(&c4[i][j],1,MPI_DOUBLE,0,world);
       }
     }
 }
@@ -416,7 +425,7 @@ void PairLJ1264CutCoulCut::read_restart_settings(FILE *fp)
 void PairLJ1264CutCoulCut::write_data(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
-    fprintf(fp,"%d %g %g\n",i,epsilon[i][i],sigma[i][i]);
+    fprintf(fp,"%d %g %g %g\n",i,epsilon[i][i],sigma[i][i], c4[i][i]);
 }
 
 /* ----------------------------------------------------------------------
@@ -427,7 +436,7 @@ void PairLJ1264CutCoulCut::write_data_all(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++)
     for (int j = i; j <= atom->ntypes; j++)
-      fprintf(fp,"%d %d %g %g %g\n",i,j,epsilon[i][j],sigma[i][j],cut_lj[i][j]);
+      fprintf(fp,"%d %d %g %g %g %g\n",i,j,epsilon[i][j],sigma[i][j],c4[i][j],cut_lj[i][j]);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -437,15 +446,16 @@ double PairLJ1264CutCoulCut::single(int i, int j, int itype, int jtype,
                                 double factor_coul, double factor_lj,
                                 double &fforce)
 {
-  double r2inv,r6inv,forcecoul,forcelj,phicoul,philj;
+  double r2inv,r4inv,r6inv,forcecoul,forcelj,phicoul,philj;
 
   r2inv = 1.0/rsq;
+  r4inv = r2inv*r2inv;
   if (rsq < cut_coulsq[itype][jtype])
     forcecoul = force->qqrd2e * atom->q[i]*atom->q[j]*sqrt(r2inv);
   else forcecoul = 0.0;
   if (rsq < cut_ljsq[itype][jtype]) {
     r6inv = r2inv*r2inv*r2inv;
-    forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]);
+    forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) - lj4c4[itype][jtype]*r4inv;
   } else forcelj = 0.0;
   fforce = (factor_coul*forcecoul + factor_lj*forcelj) * r2inv;
 
@@ -455,7 +465,7 @@ double PairLJ1264CutCoulCut::single(int i, int j, int itype, int jtype,
     eng += factor_coul*phicoul;
   }
   if (rsq < cut_ljsq[itype][jtype]) {
-    philj = r6inv*(lj3[itype][jtype]*r6inv-lj4[itype][jtype]) -
+    philj = r6inv*(lj3[itype][jtype]*r6inv-lj4[itype][jtype]) - c4[itype][jtype]*r4inv -
       offset[itype][jtype];
     eng += factor_lj*philj;
   }
@@ -471,5 +481,6 @@ void *PairLJ1264CutCoulCut::extract(const char *str, int &dim)
   if (strcmp(str,"cut_coul") == 0) return (void *) &cut_coul;
   if (strcmp(str,"epsilon") == 0) return (void *) epsilon;
   if (strcmp(str,"sigma") == 0) return (void *) sigma;
+  if (strcmp(str, "c4") == 0) return (void *) c4;
   return NULL;
 }

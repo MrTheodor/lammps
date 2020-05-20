@@ -701,7 +701,7 @@ double PairLJ1264Cut::single(int /*i*/, int /*j*/, int itype, int jtype, double 
   r4inv = r2inv*r2inv;
   r6inv = r2inv*r2inv*r2inv;
 
-  forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) + lj4c4[itype][jtype]*r4inv;
+  forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) - lj4c4[itype][jtype]*r4inv;
   fforce = factor_lj*forcelj*r2inv;
 
   philj = r6inv*(lj3[itype][jtype]*r6inv-lj4[itype][jtype]) - c4[itype][jtype]*r4inv
@@ -713,7 +713,7 @@ double PairLJ1264Cut::single(int /*i*/, int /*j*/, int itype, int jtype, double 
 
 void *PairLJ1264Cut::extract(const char *str, int &dim)
 {
-  dim = 3;
+  dim = 2;
   if (strcmp(str,"epsilon") == 0) return (void *) epsilon;
   if (strcmp(str,"sigma") == 0) return (void *) sigma;
   if (strcmp(str, "c4") == 0) return (void *) c4;
