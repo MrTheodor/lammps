@@ -121,7 +121,7 @@ void PairLJ1264CutCoulCut::compute(int eflag, int vflag)
 
         if (rsq < cut_ljsq[itype][jtype]) {
           r6inv = r2inv*r2inv*r2inv;
-          forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) + lj4c4[itype][jtype]*r4inv;;
+          forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) - lj4c4[itype][jtype]*r4inv;;
         } else forcelj = 0.0;
 
         fpair = (factor_coul*forcecoul + factor_lj*forcelj) * r2inv;

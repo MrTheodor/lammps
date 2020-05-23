@@ -118,7 +118,7 @@ void PairLJ1264Cut::compute(int eflag, int vflag)
         r2inv = 1.0/rsq;
         r4inv = r2inv*r2inv;
         r6inv = r2inv*r2inv*r2inv;
-        forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) + lj4c4[itype][jtype]*r4inv;
+        forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) - lj4c4[itype][jtype]*r4inv;
         fpair = factor_lj*forcelj*r2inv;
 
         f[i][0] += delx*fpair;
@@ -198,7 +198,7 @@ void PairLJ1264Cut::compute_inner()
         r4inv = r2inv*r2inv;
         r6inv = r2inv*r2inv*r2inv;
         jtype = type[j];
-        forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) + lj4c4[itype][jtype]*r4inv;
+        forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) - lj4c4[itype][jtype]*r4inv;
         fpair = factor_lj*forcelj*r2inv;
         if (rsq > cut_out_on_sq) {
           rsw = (sqrt(rsq) - cut_out_on)/cut_out_diff;
@@ -277,7 +277,7 @@ void PairLJ1264Cut::compute_middle()
         r4inv = r2inv*r2inv;
         r6inv = r2inv*r2inv*r2inv;
         jtype = type[j];
-        forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) + lj4c4[itype][jtype]*r4inv;
+        forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) - lj4c4[itype][jtype]*r4inv;
         fpair = factor_lj*forcelj*r2inv;
         if (rsq < cut_in_on_sq) {
           rsw = (sqrt(rsq) - cut_in_off)/cut_in_diff;
@@ -359,7 +359,7 @@ void PairLJ1264Cut::compute_outer(int eflag, int vflag)
           r2inv = 1.0/rsq;
           r4inv = r2inv*r2inv;
           r6inv = r2inv*r2inv*r2inv;
-          forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) + lj4c4[itype][jtype]*r4inv;
+          forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) - lj4c4[itype][jtype]*r4inv;
           fpair = factor_lj*forcelj*r2inv;
           if (rsq < cut_in_on_sq) {
             rsw = (sqrt(rsq) - cut_in_off)/cut_in_diff;
@@ -388,7 +388,7 @@ void PairLJ1264Cut::compute_outer(int eflag, int vflag)
           if (rsq <= cut_in_off_sq) {
             r2inv = 1.0/rsq;
             r6inv = r2inv*r2inv*r2inv;
-            forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) + lj4c4[itype][jtype]*r4inv;
+            forcelj = r6inv * (lj1[itype][jtype]*r6inv - lj2[itype][jtype]) - lj4c4[itype][jtype]*r4inv;
             fpair = factor_lj*forcelj*r2inv;
           } else if (rsq < cut_in_on_sq)
             fpair = factor_lj*forcelj*r2inv;
