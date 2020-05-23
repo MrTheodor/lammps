@@ -1,7 +1,28 @@
-Ths package implements the LJ 12-6-4 potential as a LAMMPS pair style.
+This package implements the LJ 12-6-4 potential as a LAMMPS pair style.
 
 =========================================================================
 
-Use "make yes-lj-1264" to enable this package when building LAMMPS.
+Use "make yes-user-lj1264" to enable this package when building LAMMPS.
 
-In your LAMMPS input script you can use this pair by "pair_style lj1264".
+The package implements two pair styles: lj/1264/cut and lj/1264/cut/coul/cut
+
+pair_style lj1264/cut <cutoff>
+pair_coeff <itype> <jtype> <sigma> <epsilon> <c> <cutoff>
+
+or
+
+pair_style lj1264/cut/coul/cut <lj cutoff> <coul cutoff>
+pair_coeff <itype> <jtype> <sigma> <epsilon> <c4> <lj cutoff>  <coul cutoff>
+
+
+Example of usage
+
+```
+pair_style lj1264/cut 3.0
+pair_coeff 1 1 1.0 1.0 1.0 3.0
+```
+
+
+References:
+ - Pengfei, Li; Son, Lin Frank; Merz Jr., Kenneth M. (2015), "Parameterization of Highly Charged Metal Ions Using the 12-6‑4 LJ-Type Nonbonded Model in Explicit Water", Journal of Physical Chemistry B, 119: 883–895, doi:10.1021/jp505875v
+ - Pengfei, Li; Merz Jr., Kenneth M. (2014), "Taking into Account the Ion-induced Dipole Interaction in the Nonbonded Model of Ions", Journal of Chemical Theory and Computation, 10 (1): 289–297, doi:10.1021/ct400751u, PMC 3960013
